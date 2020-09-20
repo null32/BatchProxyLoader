@@ -10,22 +10,55 @@ namespace BatchDownloader
 {
     public class Loader
     {
-        public List<WebProxy> Proxies { get; private set; }
-        public List<HttpClient> HttpClients { get; private set; }
-        public bool FileSizeBasedRoundRobin { get; set; }
+        public List<ProxyWorker> Workers { get; private set; }
+        public List<WebProxy> Proxies
+        {
+            get
+            {
+                return Workers.Select(e => e.WebProxy).ToList();
+            }
+        }
+        public List<HttpClient> HttpClients
+        {
+            get
+            {
+                return Workers.Select(e => e.HttpClient).ToList();
+            }
+        }
+        public bool FileSizePrecache { get; set; }
+        public bool IsInProgress
+        {
+            get
+            {
+                return Workers.Any(e => !e.CurrentTask.IsCompleted);
+            }
+        }
+        public int QueueCount
+        {
+            get
+            {
+                 return loadItems.Count;
+            }
+        }
+        public LoaderProgress Progress
+        {
+            get
+            {
+                return new LoaderProgress(this);
+            }
+        }
 
-        private readonly string userAgent;
         private readonly Random random;
-        private readonly List<LoaderQueue> queue;
+        private readonly Queue<LoadItem> loadItems;
+        private readonly string userAgent;
 
         public Loader() : this("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:68.0) Gecko/20100101 Firefox/68.0") { }
         public Loader(string userAgent)
         {
-            Proxies = new List<WebProxy>();
-            HttpClients = new List<HttpClient>();
+            Workers = new List<ProxyWorker>();
+            FileSizePrecache = true;
             random = new Random();
-            FileSizeBasedRoundRobin = true;
-            queue = new List<LoaderQueue>();
+            loadItems = new Queue<LoadItem>();
 
             if (!string.IsNullOrEmpty(userAgent))
             {
@@ -50,8 +83,6 @@ namespace BatchDownloader
             var proxy = new WebProxy(address);
             proxy.Credentials = creds;
 
-            Proxies.Add(proxy);
-
             var hclientHandler = new HttpClientHandler();
             hclientHandler.Proxy = proxy;
             hclientHandler.UseProxy = true;
@@ -59,8 +90,7 @@ namespace BatchDownloader
             var hclient = new HttpClient(hclientHandler);
             hclient.DefaultRequestHeaders.Add("User-Agent", userAgent);
 
-            HttpClients.Add(hclient);
-            queue.Add(new LoaderQueue(hclient, proxy));
+            Workers.Add(new ProxyWorker(hclient, proxy, loadItems));
 
             return proxy;
         }
@@ -69,9 +99,7 @@ namespace BatchDownloader
         {
             if (index >= 0 && index < Proxies.Count)
             {
-                Proxies.RemoveAt(index);
-                HttpClients.RemoveAt(index);
-                queue.RemoveAt(index);
+                Workers.RemoveAt(index);
             }
         }
 
@@ -86,49 +114,47 @@ namespace BatchDownloader
             return resp.Content.Headers.ContentLength ?? -1;
         }
 
-        public async Task<LoaderQueue> DownloadFile(string url, string savePath)
+        public async Task<LoadItem> DownloadFile(string url, string savePath)
         {
             return await DownloadFile(new Uri(url), savePath);
         }
-        public async Task<LoaderQueue> DownloadFile(Uri url, string savePath)
+        public async Task<LoadItem> DownloadFile(Uri url, string savePath)
         {
-            LoaderQueue q;
-            if (FileSizeBasedRoundRobin)
+            LoadItem li;
+            if (FileSizePrecache)
             {
                 var sz = await GetUrlFileSize(url);
                 if (sz == -1)
                 {
                     throw new Exception("Failed to get size of file via HEAD");
                 }
-                q = queue.OrderBy(e => e.TotalRemain).First();
-                q.Add(new LoadItem() { FileSize = sz, Url = url, SavePath = savePath });
+                li = new LoadItem() { FileSize = sz, Url = url, SavePath = savePath };
             }
             else
             {
-                q = queue.OrderBy(e => e.Items.Count).First();
-                q.Add(new LoadItem() { Url = url, SavePath = savePath });
+                li = new LoadItem() { Url = url, SavePath = savePath };
             }
 
-            return q;
+            lock (loadItems)
+            {
+                loadItems.Enqueue(li);
+            }
+
+            WakeUpLoaders();
+            return li;
+        }
+
+        private void WakeUpLoaders()
+        {
+            foreach (var worker in Workers)
+            {
+                worker.WakeUp();
+            }
         }
 
         public void WaitForDownload()
         {
-            Task.WaitAll(queue.Select(e => e.CurrentTask).ToArray());
-        }
-        public bool IsInProgress
-        {
-            get
-            {
-                return queue.Any(e => !e.CurrentTask.IsCompleted);
-            }
-        }
-        public FullProgress Progress
-        {
-            get
-            {
-                return new FullProgress(queue);
-            }
+            Task.WaitAll(Workers.Select(e => e.CurrentTask).ToArray());
         }
 
         public override string ToString()

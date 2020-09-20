@@ -1,76 +1,60 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
 
 namespace BatchDownloader
 {
-    public class LoaderQueue
+    public class ProxyWorker
     {
-        private HttpClient httpClient;
-        private WebProxy webProxy;
-        private bool isLoading;
-        private LoadItem current;
-
-        public LoaderQueue(HttpClient cl, WebProxy proxy)
-        {
-            httpClient = cl;
-            webProxy = proxy;
-            isLoading = false;
-            Items = new Queue<LoadItem>();
-        }
-
-        public Task CurrentTask { get; private set; }
+        public HttpClient HttpClient { get; private set; }
+        public WebProxy WebProxy { get; private set; }
         public Queue<LoadItem> Items { get; private set; }
-        public long CurrentProgress { get; set; }
-        public long CurrentTotal
+        public Task CurrentTask { get; private set; }
+        public long BytesDownloaded { get; set; }
+        public long BytesTotal
         {
             get
             {
                 return current?.FileSize ?? 0;
             }
         }
-        public long TotalRemain
-        {
-            get
-            {
-                return Items.Sum(e => e.FileSize) + (current?.FileSize ?? 0);
-            }
-        }
-        public int Count
-        {
-            get
-            {
-                return Items.Count + (current is null ? 0 : 1);
-            }
-        }
         public string DisplayName
         {
             get
             {
-                return webProxy.Address.ToString();
+                return WebProxy.Address.ToString();
             }
         }
-        public LoaderProgress Progress
+        public WorkerProgress Progress
         {
             get
             {
-                return new LoaderProgress(this);
+                return new WorkerProgress(this);
             }
         }
 
-        public void Add(LoadItem item)
+        private bool isLoading;
+        private LoadItem current;
+
+        public ProxyWorker(HttpClient cl, WebProxy proxy, Queue<LoadItem> items)
         {
-            Items.Enqueue(item);
+            HttpClient = cl;
+            WebProxy = proxy;
+            Items = items;
+            isLoading = false;
+        }
+
+        public void WakeUp()
+        {
             var t = StartLoading();
             if (!t.IsCompleted)
             {
                 CurrentTask = t;
             }
         }
+
         private async Task StartLoading()
         {
             if (isLoading)
@@ -78,10 +62,18 @@ namespace BatchDownloader
                 return;
             }
             isLoading = true;
-            while (Items.Count > 0)
+            while (true)
             {
-                current = Items.Dequeue();
-                var resp = await httpClient.GetAsync(current.Url, HttpCompletionOption.ResponseHeadersRead);
+                lock (Items)
+                {
+                    if (Items.Count == 0)
+                    {
+                        break;
+                    }
+                    current = Items.Dequeue();
+                }
+
+                var resp = await HttpClient.GetAsync(current.Url, HttpCompletionOption.ResponseHeadersRead);
                 if (current.FileSize == 0)
                 {
                     current.FileSize = resp.Content.Headers.ContentLength ?? 0;
@@ -90,7 +82,7 @@ namespace BatchDownloader
                 var inStream = await resp.Content.ReadAsStreamAsync();
                 var outStream = File.OpenWrite(current.SavePath);
                 var buffer = new byte[4096];
-                CurrentProgress = 0;
+                BytesDownloaded = 0;
 
                 while (true)
                 {
@@ -101,10 +93,10 @@ namespace BatchDownloader
                     }
 
                     outStream.Write(buffer, 0, sz);
-                    CurrentProgress += sz;
+                    BytesDownloaded += sz;
                 }
 
-                CurrentProgress = 0;
+                BytesDownloaded = 0;
                 inStream.Close();
                 outStream.Close();
             }
