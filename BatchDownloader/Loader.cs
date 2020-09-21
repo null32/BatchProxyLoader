@@ -40,6 +40,13 @@ namespace BatchDownloader
                  return loadItems.Count;
             }
         }
+        public Task DownloadTask
+        {
+            get
+            {
+                return Task.WhenAll(Workers.Select(e => e.CurrentTask));
+            }
+        }
         public LoaderProgress Progress
         {
             get
@@ -154,7 +161,7 @@ namespace BatchDownloader
 
         public void WaitForDownload()
         {
-            Task.WaitAll(Workers.Select(e => e.CurrentTask).ToArray());
+            DownloadTask.Wait();
         }
 
         public override string ToString()
