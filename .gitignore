@@ -341,3 +341,4 @@ healthchecksdb
 
 #
 batch-loader-proxies.bin
+DebugApp/
