@@ -95,9 +95,13 @@ function SaveProxies {
     )
     
     process {
-        if ($proxies.Count -eq 0) {
+        if ($loader.Proxies.Count -eq 0) {
+            if (Test-Path $SavePath) {
+                Remove-Item $SavePath
+            }
             return $true
         }
+
         try {
             $bf = New-Object System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
             $fs = [System.IO.File]::Create($SavePath)
@@ -179,10 +183,10 @@ function RemoveProxy {
         $Index
     )
     process {
-        if ($Index -ge $proxies.Count) {
+        if ($Index -ge $loader.Proxies.Count) {
             return
         }
-        Write-Host ("Removed proxy #{0} ({1})" -f $Index, $proxies[$Index].Address)
+        Write-Host ("Removed proxy #{0} ({1})" -f $Index, $loader.Proxies[$Index].Address)
         $loader.RemoveProxy($Index)
     }
 }
