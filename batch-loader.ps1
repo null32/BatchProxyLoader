@@ -63,19 +63,28 @@ function AddProxy {
         $ProxyPass
     )
     process {
-        $p = $null
+        $p = $false
+        if ($loader.ProxyCheckOnAdd) {
+            Write-Host "Adding proxy"
+        }
         try {
             if ($ProxyAuth) {
                 if ($ProxyUser -ne "" -and $ProxyPass -ne "") {
-                    $p = $loader.AddProxy($ProxyAddress, $ProxyUser, $ProxyPass)
+                    $p = $loader.AddProxy($ProxyAddress, $ProxyUser, $ProxyPass) | Await-Task
                 } else {
                     $creds = Get-Credential -Message "Enter proxy credentials"
-                    $p = $loader.AddProxy($ProxyAddress, $creds.UserName, $creds.Password)
+                    $p = $loader.AddProxy($ProxyAddress, $creds.UserName, $creds.Password) | Await-Task
                 }
             } else {
-                $p = $loader.AddProxy($ProxyAddress)
+                $p = $loader.AddProxy($ProxyAddress) | Await-Task
             }
-            Write-Verbose -Message ("Created proxy: {1}{0}" -f $p.Address, ($ProxyAuth ? $p.Credentials.UserName + "@" : ""))
+            if ($p) {
+                $newProxy = $loader.Proxies[$loader.Proxies.Count - 1]
+                Write-Verbose -Message ("Created proxy: {1}{0}" -f $newProxy.Address, ($ProxyAuth ? $newProxy.Credentials.UserName + "@" : ""))
+                Write-Host "Proxy added"
+            } else {
+                Write-Host "Proxy check failed"
+            }
         }
         catch {
             Write-Error "Failed to add proxy: $_"
@@ -173,6 +182,20 @@ function PrintProxies {
             Label="UserName"; Expression={$_.Credentials ? $_.Credentials.UserName : ""}
         }
     }    
+}
+
+function CheckProxies {
+    param()
+    process {
+        $res = @($loader.CheckProxies() | Await-Task)
+        $loader.Proxies | ForEach-Object {$index = 0} {$_; $index++} | Format-Table @{
+            Label="Index"; Expression={$index}
+        }, @{
+            Label="Address"; Expression={$_.Address}
+        }, @{
+            Label="Working"; Expression={$res[$index]}
+        }
+    }
 }
 
 function RemoveProxy {
@@ -296,6 +319,11 @@ function Main {
                 }
                 $p = [string]::Join(" ", $tokens[1..$tokens.Count])
                 SetPath -SavePath $p
+                continue
+            }
+
+            if ($userInput -eq "check") {
+                CheckProxies
                 continue
             }
 

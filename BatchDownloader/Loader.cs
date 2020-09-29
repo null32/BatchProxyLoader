@@ -26,6 +26,39 @@ namespace BatchDownloader
             }
         }
         public bool FileSizePrecache { get; set; }
+        public Uri ProxyCheckUrl
+        {
+            get
+            {
+                return proxyCheckUrl;
+            }
+            set
+            {
+                if (value is null)
+                {
+                    throw new Exception("Uri can not be null");
+                }
+                proxyCheckUrl = value;
+            }
+        }
+        private Uri proxyCheckUrl;
+        public HttpMethod ProxyCheckMethod
+        {
+            get
+            {
+                return proxyCheckMethod;
+            }
+            set
+            {
+                if (!(value is null) || !allowedMethods.Contains(value))
+                {
+                    throw new Exception("Method is null or not allowed");
+                }
+                proxyCheckMethod = value;
+            }
+        }
+        private HttpMethod proxyCheckMethod;
+        public bool ProxyCheckOnAdd { get; set; }
         public bool IsInProgress
         {
             get
@@ -58,34 +91,33 @@ namespace BatchDownloader
         private readonly Random random;
         private readonly Queue<LoadItem> loadItems;
         private readonly string userAgent;
+        private readonly List<HttpMethod> allowedMethods = new List<HttpMethod> { HttpMethod.Get, HttpMethod.Head };
 
         public Loader() : this("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:68.0) Gecko/20100101 Firefox/68.0") { }
         public Loader(string userAgent)
         {
+            if (string.IsNullOrEmpty(userAgent))
+            {
+                throw new ArgumentException("Empty user agent", "userAgent");
+            }
+
             Workers = new List<ProxyWorker>();
-            FileSizePrecache = true;
+            FileSizePrecache = false;
+            ProxyCheckOnAdd = true;
             random = new Random();
             loadItems = new Queue<LoadItem>();
-
-            if (!string.IsNullOrEmpty(userAgent))
-            {
-                this.userAgent = userAgent;
-            }
+            this.userAgent = userAgent;
+            proxyCheckUrl = new Uri("https://google.com/");
+            proxyCheckMethod = HttpMethod.Get;
         }
 
-        public WebProxy AddProxy(string address)
-        {
-            return AddProxy(address, null);
-        }
-        public WebProxy AddProxy(string address, string userName, string passWord)
-        {
-            return AddProxy(address, new NetworkCredential(userName, passWord));
-        }
-        public WebProxy AddProxy(string address, string userName, SecureString passWord)
-        {
-            return AddProxy(address, new NetworkCredential(userName, passWord));
-        }
-        public WebProxy AddProxy(string address, ICredentials creds = null)
+        public Task<bool> AddProxy(string address)
+            => AddProxy(address, null);
+        public Task<bool> AddProxy(string address, string userName, string passWord)
+            => AddProxy(address, new NetworkCredential(userName, passWord));
+        public Task<bool> AddProxy(string address, string userName, SecureString passWord)
+            => AddProxy(address, new NetworkCredential(userName, passWord));
+        public async Task<bool> AddProxy(string address, ICredentials creds = null)
         {
             var proxy = new WebProxy(address);
             proxy.Credentials = creds;
@@ -97,9 +129,21 @@ namespace BatchDownloader
             var hclient = new HttpClient(hclientHandler);
             hclient.DefaultRequestHeaders.Add("User-Agent", userAgent);
 
-            Workers.Add(new ProxyWorker(hclient, proxy, loadItems));
+            var worker = new ProxyWorker(hclient, proxy, loadItems);
+            if (ProxyCheckOnAdd)
+            {
+                var isProxyOk = await worker.CheckConnection(proxyCheckUrl, proxyCheckMethod);
+                if (isProxyOk)
+                {
+                    Workers.Add(worker);
+                    return true;
+                }
+                return false;
+            }
 
-            return proxy;
+            Workers.Add(worker);
+
+            return true;
         }
 
         public void RemoveProxy(int index)
@@ -110,10 +154,39 @@ namespace BatchDownloader
             }
         }
 
-        public async Task<long> GetUrlFileSize(string url)
+        public Task<bool> CheckProxy(int index) =>
+            CheckProxy(index, proxyCheckUrl, HttpMethod.Get);
+        public Task<bool> CheckProxy(int index, string url) =>
+            CheckProxy(index, new Uri(url), HttpMethod.Get);
+        public Task<bool> CheckProxy(int index, Uri url) =>
+            CheckProxy(index, url, HttpMethod.Get);
+        public Task<bool> CheckProxy(int index, string url, HttpMethod method) =>
+            CheckProxy(index, new Uri(url), method);
+        public Task<bool> CheckProxy(int index, Uri url, HttpMethod method)
         {
-            return await GetUrlFileSize(new Uri(url));
+            if (!allowedMethods.Contains(method))
+            {
+                throw new ArgumentException("Method not allowed", "method");
+            }
+            if (index < 0 || index > Workers.Count)
+            {
+                throw new ArgumentException("Invalid worker index", "index");
+            }
+
+            return Workers[index].CheckConnection(url, method);
         }
+
+        public Task<IEnumerable<bool>> CheckProxies() =>
+            CheckProxies(proxyCheckUrl);
+        public Task<IEnumerable<bool>> CheckProxies(string url) =>
+            CheckProxies(new Uri(url));
+        public async Task<IEnumerable<bool>> CheckProxies(Uri url)
+        {
+             return await Task.WhenAll(Enumerable.Range(0, Workers.Count).Select(e => CheckProxy(e, url)));
+        }
+
+        public Task<long> GetUrlFileSize(string url) =>
+            GetUrlFileSize(new Uri(url));
         public async Task<long> GetUrlFileSize(Uri url)
         {
             var req = new HttpRequestMessage(HttpMethod.Head, url);
@@ -121,10 +194,8 @@ namespace BatchDownloader
             return resp.Content.Headers.ContentLength ?? -1;
         }
 
-        public async Task<LoadItem> DownloadFile(string url, string savePath)
-        {
-            return await DownloadFile(new Uri(url), savePath);
-        }
+        public Task<LoadItem> DownloadFile(string url, string savePath)
+            => DownloadFile(new Uri(url), savePath);
         public async Task<LoadItem> DownloadFile(Uri url, string savePath)
         {
             LoadItem li;

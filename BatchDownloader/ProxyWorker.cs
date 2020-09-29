@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -44,6 +45,12 @@ namespace BatchDownloader
             WebProxy = proxy;
             Items = items;
             isLoading = false;
+        }
+
+        public async Task<bool> CheckConnection(Uri target, HttpMethod method)
+        {
+            var resp = await HttpClient.SendAsync(new HttpRequestMessage(method, target));
+            return resp.IsSuccessStatusCode;
         }
 
         public void WakeUp()
